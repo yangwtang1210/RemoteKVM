@@ -1,6 +1,5 @@
 package com.remote.kvm.service
 
-import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -12,38 +11,34 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
-import android.util.Log
-import com.remote.kvm.encoder.H265Encoder
-import org.java_websocket.client.WebSocketClient
-import org.java_websocket.handshake.ServerHandshake
-import org.json.JSONArray
-import org.json.JSONObject
-import java.net.URI
+import android.util.DisplayMetrics
+import android.view.WindowManager
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 import java.nio.ByteBuffer
+import java.util.concurrent.TimeUnit
 
 class ScreenCaptureService : Service() {
 
     companion object {
-        const val TAG = "RemoteKVM"
-        const val CHANNEL_ID = "capture_channel"
-        const val NOTIFICATION_ID = 1
-        const val ENCODE_WIDTH = 1080
-        const val ENCODE_HEIGHT = 2400
-        const val ENCODE_DPI = 320
-        const val BITRATE = 8_000_000
-        const val FRAME_RATE = 30
-        const val I_FRAME_INTERVAL = 2
-        // 改成你服务器的公网 IP
-        var SERVER_IP = "YOUR_SERVER_IP"
-
+        var SERVER_IP: String = ""
         var isRunning = false
             private set
+        private const val CHANNEL_ID = "kvm_channel"
+        private const val NOTIFICATION_ID = 1
     }
 
-    private var projection: MediaProjection? = null
+    private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private var encoder: H265Encoder? = null
-    private var wsClient: WebSocketClient? = null
+    private var webSocket: WebSocket? = null
+    private var readerThread: Thread? = null
+    @Volatile private var running = false
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -51,207 +46,167 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val resultCode = intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED)
-            ?: Activity.RESULT_CANCELED
-        val data: Intent? = if (Build.VERSION.SDK_INT >= 33) {
-            intent?.getParcelableExtra("data", Intent::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent?.getParcelableExtra<Intent>("data")
-        }
+        if (isRunning) return START_STICKY
 
-        if (resultCode != Activity.RESULT_OK || data == null) {
-            Log.w(TAG, "无授权，静默停止")
+        startForeground(NOTIFICATION_ID, buildNotification("正在采集"))
+        isRunning = true
+
+        val resultCode = intent?.getIntExtra("resultCode", -1) ?: -1
+        val data = if (Build.VERSION.SDK_INT >= 33)
+            intent?.getParcelableExtra("data", Intent::class.java)
+        else
+            @Suppress("DEPRECATION") intent?.getParcelableExtra("data")
+
+        if (resultCode == -1 || data == null) {
             stopSelf()
             return START_NOT_STICKY
         }
 
-        // 从 SharedPreferences 读取服务器 IP
-        val prefs = getSharedPreferences("kvm_prefs", MODE_PRIVATE)
-        SERVER_IP = prefs.getString("server_ip", SERVER_IP) ?: SERVER_IP
-
-        startForeground(NOTIFICATION_ID, buildNotification())
-        connectWebSocket()
+        initWebSocket()
         startCapture(resultCode, data)
         return START_STICKY
     }
 
-    // ==================== WebSocket 连接 ====================
-
-    private fun connectWebSocket() {
-        try {
-            val uri = URI("ws://$SERVER_IP:8765/?role=phone")
-            wsClient = object : WebSocketClient(uri) {
-                override fun onOpen(handshake: ServerHandshake?) {
-                    Log.i(TAG, "WebSocket 已连接: $SERVER_IP")
-                }
-
-                override fun onMessage(message: String?) {
-                    // 收到浏览器发来的控制指令
-                    message?.let { handleControlMessage(it) }
-                }
-
-                override fun onClose(code: Int, reason: String?, remote: Boolean) {
-                    Log.w(TAG, "WebSocket 断开: $code, 3秒后重连")
-                    Thread.sleep(3000)
-                    if (isRunning) connectWebSocket()
-                }
-
-                override fun onError(ex: Exception?) {
-                    Log.e(TAG, "WebSocket 错误", ex)
-                }
-            }
-            wsClient?.connect()
-        } catch (e: Exception) {
-            Log.e(TAG, "WebSocket 连接失败", e)
+    private fun initWebSocket() {
+        if (SERVER_IP.isEmpty()) {
+            val prefs = getSharedPreferences("kvm_prefs", MODE_PRIVATE)
+            SERVER_IP = prefs.getString("server_ip", "") ?: ""
         }
-    }
-
-    private fun handleControlMessage(msg: String) {
-        try {
-            val json = JSONObject(msg)
-            val type = json.getString("type")
-
-            when (type) {
-                "touch" -> {
-                    val action = json.getString("action")
-                    val x = json.optInt("x", 0)
-                    val y = json.optInt("y", 0)
-                    injectTouch(action, x, y)
-                }
-                "key" -> {
-                    val action = json.getString("action")
-                    val code = json.getInt("code")
-                    injectKey(action, code)
-                }
-                "text" -> {
-                    val text = json.getString("text")
-                    injectText(text)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "解析控制指令失败: $msg", e)
-        }
-    }
-
-    // ==================== 触控/按键注入（需要 root）====================
-
-    private fun injectTouch(action: String, x: Int, y: Int) {
-        when (action) {
-            "down" -> {
-                // 按下：记录起始点
-                touchStartX = x
-                touchStartY = y
-                runRoot("input touchscreen motionevent DOWN $x $y")
-            }
-            "move" -> {
-                runRoot("input touchscreen motionevent MOVE $x $y")
-            }
-            "up" -> {
-                runRoot("input touchscreen motionevent UP $touchStartX $touchStartY")
-            }
-        }
-    }
-
-    private var touchStartX = 0
-    private var touchStartY = 0
-
-    private fun injectKey(action: String, code: Int) {
-        if (action == "down") {
-            runRoot("input keyevent $code")
-        }
-    }
-
-    private fun injectText(text: String) {
-        // 对特殊字符转义
-        val escaped = text.replace(" ", "%s").replace("'", "\\'")
-        runRoot("input text '$escaped'")
-    }
-
-    private fun runRoot(cmd: String) {
-        Thread {
-            try {
-                val process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-                process.waitFor()
-            } catch (e: Exception) {
-                Log.e(TAG, "root 执行失败: $cmd", e)
-            }
-        }.start()
-    }
-
-    // ==================== 视频采集 ====================
-
-    private fun startCapture(resultCode: Int, data: Intent) {
-        try {
-            val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            projection = mgr.getMediaProjection(resultCode, data)
-
-            encoder = H265Encoder(
-                ENCODE_WIDTH, ENCODE_HEIGHT,
-                BITRATE, FRAME_RATE, I_FRAME_INTERVAL
-            ).also {
-                it.prepare()
-                // SPS/PPS 用特殊标记发给浏览器
-                it.onSpsAvailable = { sps -> sendNalu(1, sps) }
-                it.onPpsAvailable = { pps -> sendNalu(2, pps) }
-                it.onFrameAvailable = { _, data, _ -> sendFrame(data) }
-            }
-
-            val inputSurface = encoder!!.getInputSurface()
-            if (inputSurface == null) {
-                Log.e(TAG, "获取 InputSurface 失败")
-                stopSelf()
-                return
-            }
-
-            encoder!!.start()
-
-            virtualDisplay = projection?.createVirtualDisplay(
-                "RemoteKVM",
-                ENCODE_WIDTH, ENCODE_HEIGHT, ENCODE_DPI,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                inputSurface,
-                null, null
-            )
-
-            isRunning = true
-            Log.i(TAG, "采集启动: ${ENCODE_WIDTH}x${ENCODE_HEIGHT} @ ${FRAME_RATE}fps")
-        } catch (e: Exception) {
-            Log.e(TAG, "启动失败", e)
+        if (SERVER_IP.isEmpty()) {
+            updateNotification("未配置服务器地址")
             isRunning = false
             stopSelf()
+            return
         }
+
+        val url = if (SERVER_IP.startsWith("ws://") || SERVER_IP.startsWith("wss://"))
+            "$SERVER_IP/ws"
+        else
+            "ws://$SERVER_IP:8765/ws"
+
+        val client = OkHttpClient.Builder()
+            .pingInterval(10, TimeUnit.SECONDS)
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .build()
+
+        val request = Request.Builder().url(url).build()
+
+        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(ws: WebSocket, response: Response) {
+                updateNotification("已连接 → $SERVER_IP")
+            }
+
+            override fun onMessage(ws: WebSocket, bytes: ByteString) {}
+
+            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                ws.close(1000, null)
+                stopCapture()
+            }
+
+            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                updateNotification("连接失败: ${t.message}")
+                isRunning = false
+                stopCapture()
+            }
+        })
     }
 
-    // ==================== 数据发送 ====================
+    private fun startCapture(resultCode: Int, data: Intent) {
+        val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        mediaProjection = mgr.getMediaProjection(resultCode, data)
 
-    private fun sendNalu(type: Int, data: ByteArray) {
-        // 协议：[1字节类型][NALU数据]
-        val buf = ByteBuffer.allocate(1 + data.size)
-        buf.put(type.toByte())
-        buf.put(data)
-        wsClient?.send(buf.array())
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        wm.defaultDisplay.getRealMetrics(metrics)
+        val w = metrics.widthPixels
+        val h = metrics.heightPixels
+        val density = metrics.densityDpi
+
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "KVM", w, h, density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            null, null, null
+        )
+
+        val imageReader = android.media.ImageReader.newInstance(
+            w, h, android.graphics.PixelFormat.RGBA_8888, 2
+        )
+        virtualDisplay?.surface = imageReader.surface
+
+        running = true
+        readerThread = Thread {
+            var seq = 0L
+            while (running) {
+                try {
+                    val image = imageReader.acquireLatestImage() ?: run {
+                        Thread.sleep(33)
+                        continue
+                    }
+                    val plane = image.planes[0]
+                    val buf = plane.buffer
+                    val pixelStride = plane.pixelStride
+                    val rowStride = plane.rowStride
+                    val rowPadding = rowStride - pixelStride * w
+
+                    val bitmap = android.graphics.Bitmap.createBitmap(
+                        w + rowPadding / pixelStride, h, android.graphics.Bitmap.Config.ARGB_8888
+                    )
+                    bitmap.copyPixelsFromBuffer(buf)
+
+                    if (rowPadding > 0) {
+                        val cropped = android.graphics.Bitmap.createBitmap(bitmap, 0, 0, w, h)
+                        bitmap.recycle()
+                        sendBitmap(cropped, seq++)
+                        cropped.recycle()
+                    } else {
+                        sendBitmap(bitmap, seq++)
+                        bitmap.recycle()
+                    }
+                    image.close()
+                } catch (_: Exception) {}
+            }
+        }.apply { start() }
+
+        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() { stopCapture() }
+        }, null)
     }
 
-    private fun sendFrame(data: ByteArray) {
-        if (wsClient?.isOpen != true) return
-        // 协议：[0x03][帧数据]
-        val buf = ByteBuffer.allocate(1 + data.size)
-        buf.put(3.toByte())
-        buf.put(data)
-        wsClient?.send(buf.array())
+    private fun sendBitmap(bmp: android.graphics.Bitmap, seq: Long) {
+        val ws = webSocket ?: return
+        try {
+            val quality = 25
+            val stream = java.io.ByteArrayOutputStream()
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, stream)
+            val jpegBytes = stream.toByteArray()
+
+            val header = ByteBuffer.allocate(12)
+            header.putLong(seq)
+            header.putInt(jpegBytes.size)
+            header.flip()
+
+            val payload = ByteBuffer.allocate(12 + jpegBytes.size)
+            payload.put(header)
+            payload.put(jpegBytes)
+
+            ws.send(ByteString.of(*payload.array()))
+        } catch (_: Exception) {}
     }
 
     private fun stopCapture() {
-        isRunning = false
-        try { wsClient?.close() } catch (_: Exception) {}
-        try { virtualDisplay?.release() } catch (_: Exception) {}
-        try { projection?.stop() } catch (_: Exception) {}
-        try { encoder?.stop() } catch (_: Exception) {}
+        running = false
+        readerThread?.join(1000)
+        readerThread = null
+        virtualDisplay?.release()
         virtualDisplay = null
-        projection = null
-        encoder = null
-        wsClient = null
+        mediaProjection?.stop()
+        mediaProjection = null
+        webSocket?.close(1000, "stop")
+        webSocket = null
+        isRunning = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -259,36 +214,29 @@ class ScreenCaptureService : Service() {
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
-
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID, "后台服务", NotificationManager.IMPORTANCE_MIN
-        ).apply {
-            description = "静默运行"
-            setShowBadge(false)
-            setSound(null, null)
-            enableVibration(false)
-            enableLights(false)
+        if (Build.VERSION.SDK_INT >= 26) {
+            val ch = NotificationChannel(CHANNEL_ID, "KVM", NotificationManager.IMPORTANCE_LOW)
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .createNotificationChannel(ch)
         }
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .createNotificationChannel(channel)
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(text: String): Notification {
         return if (Build.VERSION.SDK_INT >= 26) {
             Notification.Builder(this, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_menu_camera)
-                .setOngoing(true)
-                .setCategory(Notification.CATEGORY_SERVICE)
-                .build()
+                .setContentTitle("RemoteKVM").setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_menu_send).build()
         } else {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
-                .setSmallIcon(android.R.drawable.ic_menu_camera)
-                .setOngoing(true)
-                .setPriority(Notification.PRIORITY_MIN)
-                .build()
+                .setContentTitle("RemoteKVM").setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_menu_send).build()
         }
+    }
+
+    private fun updateNotification(text: String) {
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(NOTIFICATION_ID, buildNotification(text))
     }
 }
