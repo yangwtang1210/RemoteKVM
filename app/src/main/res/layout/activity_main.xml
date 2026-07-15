@@ -1,69 +1,77 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:gravity="center"
-    android:padding="32dp"
-    android:background="#FF1A1A2E">
+    android:background="#FF121212"
+    android:padding="24dp"
+    android:id="@+id/rootLayout">
 
-    <!-- 标题 -->
     <TextView
+        android:id="@+id/titleText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="RemoteKVM"
-        android:textSize="32sp"
         android:textColor="#FFFFFFFF"
+        android:textSize="22sp"
         android:textStyle="bold"
-        android:layout_marginBottom="4dp" />
+        android:layout_alignParentTop="true"
+        android:layout_centerHorizontal="true"
+        android:layout_marginTop="16dp" />
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="被控端 · Phase 1"
-        android:textSize="14sp"
-        android:textColor="#80FFFFFF"
-        android:layout_marginBottom="64dp" />
-
-    <!-- 状态指示 -->
     <TextView
         android:id="@+id/statusText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="○ 就绪"
-        android:textSize="24sp"
+        android:text="就绪"
         android:textColor="#FFFFFFFF"
-        android:layout_marginBottom="16dp" />
-
-    <!-- 状态信息 -->
-    <TextView
-        android:id="@+id/infoText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="1080p · 60fps · H.265"
-        android:textSize="13sp"
-        android:textColor="#60FFFFFF"
-        android:layout_marginBottom="48dp" />
-
-    <!-- 主按钮 -->
-    <Button
-        android:id="@+id/toggleButton"
-        android:layout_width="260dp"
-        android:layout_height="56dp"
-        android:text="开始采集"
         android:textSize="16sp"
-        android:textColor="#FFFFFFFF"
-        android:backgroundTint="#FF6200EE" />
+        android:layout_below="@id/titleText"
+        android:layout_centerHorizontal="true"
+        android:layout_marginTop="8dp" />
 
-    <!-- 日志区域 -->
+    <EditText
+        android:id="@+id/serverInput"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:hint="服务器 IP 或域名"
+        android:textColorHint="#66FFFFFF"
+        android:textColor="#FFFFFFFF"
+        android:textSize="16sp"
+        android:inputType="textUri"
+        android:singleLine="true"
+        android:background="#FF333333"
+        android:padding="12dp"
+        android:layout_below="@id/statusText"
+        android:layout_marginTop="20dp" />
+
+    <Button
+        android:id="@+id/saveIpButton"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:text="保存"
+        android:textSize="14sp"
+        android:layout_below="@id/serverInput"
+        android:layout_marginTop="8dp" />
+
     <TextView
         android:id="@+id/logText"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text=""
-        android:textSize="12sp"
-        android:textColor="#60FFFFFF"
-        android:layout_marginTop="32dp"
-        android:gravity="center" />
+        android:textColor="#99FFFFFF"
+        android:textSize="13sp"
+        android:gravity="center"
+        android:layout_below="@id/saveIpButton"
+        android:layout_marginTop="12dp" />
 
-</LinearLayout>
+    <Button
+        android:id="@+id/toggleButton"
+        android:layout_width="220dp"
+        android:layout_height="56dp"
+        android:text="开始采集"
+        android:textSize="18sp"
+        android:layout_alignParentBottom="true"
+        android:layout_centerHorizontal="true"
+        android:layout_marginBottom="48dp" />
+
+</RelativeLayout>

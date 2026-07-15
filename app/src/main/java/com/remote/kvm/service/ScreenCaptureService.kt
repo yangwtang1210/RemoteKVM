@@ -14,20 +14,27 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import com.remote.kvm.encoder.H265Encoder
+import org.java_websocket.client.WebSocketClient
+import org.java_websocket.handshake.ServerHandshake
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.URI
+import java.nio.ByteBuffer
 
 class ScreenCaptureService : Service() {
 
     companion object {
-        const val TAG = "ScreenCapture"
+        const val TAG = "RemoteKVM"
         const val CHANNEL_ID = "capture_channel"
         const val NOTIFICATION_ID = 1
-
-        const val ENCODE_WIDTH = 1920
-        const val ENCODE_HEIGHT = 1080
+        const val ENCODE_WIDTH = 1080
+        const val ENCODE_HEIGHT = 2400
         const val ENCODE_DPI = 320
-        const val BITRATE = 15_000_000
-        const val FRAME_RATE = 60
-        const val I_FRAME_INTERVAL = 1
+        const val BITRATE = 8_000_000
+        const val FRAME_RATE = 30
+        const val I_FRAME_INTERVAL = 2
+        // 改成你服务器的公网 IP
+        var SERVER_IP = "YOUR_SERVER_IP"
 
         var isRunning = false
             private set
@@ -36,6 +43,7 @@ class ScreenCaptureService : Service() {
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var encoder: H265Encoder? = null
+    private var wsClient: WebSocketClient? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -45,11 +53,11 @@ class ScreenCaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resultCode = intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED)
             ?: Activity.RESULT_CANCELED
-        val data = if (Build.VERSION.SDK_INT >= 33) {
+        val data: Intent? = if (Build.VERSION.SDK_INT >= 33) {
             intent?.getParcelableExtra("data", Intent::class.java)
         } else {
             @Suppress("DEPRECATION")
-            intent?.getParcelableExtra("data")
+            intent?.getParcelableExtra<Intent>("data")
         }
 
         if (resultCode != Activity.RESULT_OK || data == null) {
@@ -58,11 +66,120 @@ class ScreenCaptureService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification())
-        startCapture(resultCode, data)
+        // 从 SharedPreferences 读取服务器 IP
+        val prefs = getSharedPreferences("kvm_prefs", MODE_PRIVATE)
+        SERVER_IP = prefs.getString("server_ip", SERVER_IP) ?: SERVER_IP
 
+        startForeground(NOTIFICATION_ID, buildNotification())
+        connectWebSocket()
+        startCapture(resultCode, data)
         return START_STICKY
     }
+
+    // ==================== WebSocket 连接 ====================
+
+    private fun connectWebSocket() {
+        try {
+            val uri = URI("ws://$SERVER_IP:8765/?role=phone")
+            wsClient = object : WebSocketClient(uri) {
+                override fun onOpen(handshake: ServerHandshake?) {
+                    Log.i(TAG, "WebSocket 已连接: $SERVER_IP")
+                }
+
+                override fun onMessage(message: String?) {
+                    // 收到浏览器发来的控制指令
+                    message?.let { handleControlMessage(it) }
+                }
+
+                override fun onClose(code: Int, reason: String?, remote: Boolean) {
+                    Log.w(TAG, "WebSocket 断开: $code, 3秒后重连")
+                    Thread.sleep(3000)
+                    if (isRunning) connectWebSocket()
+                }
+
+                override fun onError(ex: Exception?) {
+                    Log.e(TAG, "WebSocket 错误", ex)
+                }
+            }
+            wsClient?.connect()
+        } catch (e: Exception) {
+            Log.e(TAG, "WebSocket 连接失败", e)
+        }
+    }
+
+    private fun handleControlMessage(msg: String) {
+        try {
+            val json = JSONObject(msg)
+            val type = json.getString("type")
+
+            when (type) {
+                "touch" -> {
+                    val action = json.getString("action")
+                    val x = json.optInt("x", 0)
+                    val y = json.optInt("y", 0)
+                    injectTouch(action, x, y)
+                }
+                "key" -> {
+                    val action = json.getString("action")
+                    val code = json.getInt("code")
+                    injectKey(action, code)
+                }
+                "text" -> {
+                    val text = json.getString("text")
+                    injectText(text)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "解析控制指令失败: $msg", e)
+        }
+    }
+
+    // ==================== 触控/按键注入（需要 root）====================
+
+    private fun injectTouch(action: String, x: Int, y: Int) {
+        when (action) {
+            "down" -> {
+                // 按下：记录起始点
+                touchStartX = x
+                touchStartY = y
+                runRoot("input touchscreen motionevent DOWN $x $y")
+            }
+            "move" -> {
+                runRoot("input touchscreen motionevent MOVE $x $y")
+            }
+            "up" -> {
+                runRoot("input touchscreen motionevent UP $touchStartX $touchStartY")
+            }
+        }
+    }
+
+    private var touchStartX = 0
+    private var touchStartY = 0
+
+    private fun injectKey(action: String, code: Int) {
+        if (action == "down") {
+            runRoot("input keyevent $code")
+        }
+    }
+
+    private fun injectText(text: String) {
+        // 对特殊字符转义
+        val escaped = text.replace(" ", "%s").replace("'", "\\'")
+        runRoot("input text '$escaped'")
+    }
+
+    private fun runRoot(cmd: String) {
+        Thread {
+            try {
+                val process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+                process.waitFor()
+            } catch (e: Exception) {
+                Log.e(TAG, "root 执行失败: $cmd", e)
+            }
+        }.start()
+    }
+
+    // ==================== 视频采集 ====================
 
     private fun startCapture(resultCode: Int, data: Intent) {
         try {
@@ -74,7 +191,10 @@ class ScreenCaptureService : Service() {
                 BITRATE, FRAME_RATE, I_FRAME_INTERVAL
             ).also {
                 it.prepare()
-                it.start()
+                // SPS/PPS 用特殊标记发给浏览器
+                it.onSpsAvailable = { sps -> sendNalu(1, sps) }
+                it.onPpsAvailable = { pps -> sendNalu(2, pps) }
+                it.onFrameAvailable = { _, data, _ -> sendFrame(data) }
             }
 
             val inputSurface = encoder!!.getInputSurface()
@@ -83,6 +203,8 @@ class ScreenCaptureService : Service() {
                 stopSelf()
                 return
             }
+
+            encoder!!.start()
 
             virtualDisplay = projection?.createVirtualDisplay(
                 "RemoteKVM",
@@ -93,8 +215,7 @@ class ScreenCaptureService : Service() {
             )
 
             isRunning = true
-            Log.i(TAG, "✓ 采集启动: ${ENCODE_WIDTH}x${ENCODE_HEIGHT} @ ${FRAME_RATE}fps")
-
+            Log.i(TAG, "采集启动: ${ENCODE_WIDTH}x${ENCODE_HEIGHT} @ ${FRAME_RATE}fps")
         } catch (e: Exception) {
             Log.e(TAG, "启动失败", e)
             isRunning = false
@@ -102,15 +223,35 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    // ==================== 数据发送 ====================
+
+    private fun sendNalu(type: Int, data: ByteArray) {
+        // 协议：[1字节类型][NALU数据]
+        val buf = ByteBuffer.allocate(1 + data.size)
+        buf.put(type.toByte())
+        buf.put(data)
+        wsClient?.send(buf.array())
+    }
+
+    private fun sendFrame(data: ByteArray) {
+        if (wsClient?.isOpen != true) return
+        // 协议：[0x03][帧数据]
+        val buf = ByteBuffer.allocate(1 + data.size)
+        buf.put(3.toByte())
+        buf.put(data)
+        wsClient?.send(buf.array())
+    }
+
     private fun stopCapture() {
         isRunning = false
+        try { wsClient?.close() } catch (_: Exception) {}
         try { virtualDisplay?.release() } catch (_: Exception) {}
         try { projection?.stop() } catch (_: Exception) {}
         try { encoder?.stop() } catch (_: Exception) {}
         virtualDisplay = null
         projection = null
         encoder = null
-        Log.i(TAG, "✓ 采集停止")
+        wsClient = null
     }
 
     override fun onDestroy() {
@@ -122,9 +263,7 @@ class ScreenCaptureService : Service() {
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
-            CHANNEL_ID,
-            "后台服务",
-            NotificationManager.IMPORTANCE_MIN
+            CHANNEL_ID, "后台服务", NotificationManager.IMPORTANCE_MIN
         ).apply {
             description = "静默运行"
             setShowBadge(false)
@@ -137,19 +276,19 @@ class ScreenCaptureService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val builder = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setOngoing(true)
-            .setPriority(Notification.PRIORITY_MIN)
-            .setCategory(Notification.CATEGORY_SERVICE)
-
-        if (Build.VERSION.SDK_INT >= 26) {
-            // API 26+ 通知已经在 channel 层面设为 MIN，不需要额外 setSilent
+        return if (Build.VERSION.SDK_INT >= 26) {
+            Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .setOngoing(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .build()
         } else {
             @Suppress("DEPRECATION")
-            builder.setSound(null)
+            Notification.Builder(this)
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .setOngoing(true)
+                .setPriority(Notification.PRIORITY_MIN)
+                .build()
         }
-
-        return builder.build()
     }
 }

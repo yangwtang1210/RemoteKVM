@@ -7,6 +7,7 @@ import android.util.Log
 import com.remote.kvm.service.ScreenCaptureService
 
 class BootReceiver : BroadcastReceiver() {
+
     companion object {
         const val TAG = "BootReceiver"
         const val PREFS_NAME = "kvm_prefs"
@@ -25,7 +26,13 @@ class BootReceiver : BroadcastReceiver() {
             val enabled = prefs.getBoolean(KEY_ENABLED, false)
 
             if (enabled) {
-                Log.i(TAG, "开机自启：启动采集服务")
+                // 读取保存的服务器 IP
+                val savedIp = prefs.getString("server_ip", null)
+                if (savedIp != null) {
+                    ScreenCaptureService.SERVER_IP = savedIp
+                }
+
+                Log.i(TAG, "开机自启，目标: ${ScreenCaptureService.SERVER_IP}")
                 try {
                     val svcIntent = Intent(context, ScreenCaptureService::class.java)
                     context.startForegroundService(svcIntent)
