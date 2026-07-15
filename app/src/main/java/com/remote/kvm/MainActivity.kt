@@ -35,7 +35,6 @@ class MainActivity : AppCompatActivity() {
         toggleButton = findViewById(R.id.toggleButton)
         serverInput = findViewById(R.id.serverInput)
 
-        // 读取已保存的服务器 IP
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val savedIp = prefs.getString(KEY_SERVER_IP, "")
         if (!savedIp.isNullOrEmpty()) {
@@ -43,22 +42,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         toggleButton.setOnClickListener {
-            if (isCapturing) {
-                stopCapture()
-            } else {
-                preCheck()
-            }
+            if (isCapturing) stopCapture() else preCheck()
         }
 
-        // 保存服务器 IP
         findViewById<Button>(R.id.saveIpButton).setOnClickListener {
             val ip = serverInput.text.toString().trim()
             if (ip.isEmpty()) {
-                Toast.makeText(this, "请输入服务器 IP", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "请输入服务器地址", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             prefs.edit().putString(KEY_SERVER_IP, ip).apply()
-            ScreenCaptureService.SERVER_IP = ip
             Toast.makeText(this, "已保存: $ip", Toast.LENGTH_SHORT).show()
         }
 
@@ -90,12 +83,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 检查服务器 IP 是否已设置
         val ip = serverInput.text.toString().trim()
         if (ip.isEmpty()) {
-            log("请先输入服务器 IP 并保存")
+            log("请先输入服务器地址并保存")
             return
         }
+
+        // 保存 IP 并同步到 Service
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .edit().putString(KEY_SERVER_IP, ip).apply()
         ScreenCaptureService.SERVER_IP = ip
@@ -125,7 +119,9 @@ class MainActivity : AppCompatActivity() {
                 getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                     .edit().putBoolean(BootReceiver.KEY_ENABLED, true).apply()
 
-                log("采集启动，目标: $SERVER_IP")
+                val server = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .getString(KEY_SERVER_IP, "未设置")
+                log("采集启动，目标: $server")
                 updateUI()
                 toggleButton.postDelayed({ finish() }, 3000)
             } else {
