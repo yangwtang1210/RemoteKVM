@@ -86,7 +86,7 @@ class ScreenCaptureService : Service() {
 
         val client = OkHttpClient.Builder()
             .pingInterval(10, TimeUnit.SECONDS)
-            .connectTimeout(5, TimeUnit.SECONDS)
+            .connectTimeout(5,.SECONDS)
             .build()
 
         val request = Request.Builder().url(url).build()
@@ -139,31 +139,33 @@ class ScreenCaptureService : Service() {
             var seq = 0L
             while (running) {
                 try {
-                    val image = imageReader.acquireLatestImage() ?: run {
+                    val image = imageReader.acquireLatestImage()
+                    if (image == null) {
                         Thread.sleep(33)
-                        continue
-                    }
-                    val plane = image.planes[0]
-                    val buf = plane.buffer
-                    val pixelStride = plane.pixelStride
-                    val rowStride = plane.rowStride
-                    val rowPadding = rowStride - pixelStride * w
-
-                    val bitmap = android.graphics.Bitmap.createBitmap(
-                        w + rowPadding / pixelStride, h, android.graphics.Bitmap.Config.ARGB_8888
-                    )
-                    bitmap.copyPixelsFromBuffer(buf)
-
-                    if (rowPadding > 0) {
-                        val cropped = android.graphics.Bitmap.createBitmap(bitmap, 0, 0, w, h)
-                        bitmap.recycle()
-                        sendBitmap(cropped, seq++)
-                        cropped.recycle()
                     } else {
-                        sendBitmap(bitmap, seq++)
-                        bitmap.recycle()
+                        val plane = image.planes[0]
+                        val buf = plane.buffer
+                        val pixelStride = plane.pixelStride
+                        val rowStride = plane.rowStride
+                        val rowPadding = rowStride - pixelStride * w
+
+                        val bitmap = android.graphics.Bitmap.createBitmap(
+                            w + rowPadding / pixelStride, h,
+                            android.graphics.Bitmap.Config.ARGB_8888
+                        )
+                        bitmap.copyPixelsFromBuffer(buf)
+
+                        if (rowPadding > 0) {
+                            val cropped = android.graphics.Bitmap.createBitmap(bitmap, 0, 0, w, h)
+                            bitmap.recycle()
+                            sendBitmap(cropped, seq++)
+                            cropped.recycle()
+                        } else {
+                            sendBitmap(bitmap, seq++)
+                            bitmap.recycle()
+                        }
+                        image.close()
                     }
-                    image.close()
                 } catch (_: Exception) {}
             }
         }.apply { start() }
