@@ -12,7 +12,9 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.WindowManager
+import android.widget.Toast
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -30,6 +32,7 @@ class ScreenCaptureService : Service() {
             private set
         private const val CHANNEL_ID = "kvm_channel"
         private const val NOTIFICATION_ID = 1
+        private const val TAG = "RemoteKVM"
     }
 
     private var mediaProjection: MediaProjection? = null
@@ -43,12 +46,14 @@ class ScreenCaptureService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        Log.d(TAG, "Service onCreate")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.d(TAG, "onStartCommand, isRunning=$isRunning")
         if (isRunning) return START_STICKY
 
-        startForeground(NOTIFICATION_ID, buildNotification("正在采集"))
+        startForeground(NOTIFICATION_ID, buildNotification("正在初始化"))
         isRunning = true
 
         val resultCode = intent?.getIntExtra("resultCode", -1) ?: -1
@@ -57,7 +62,11 @@ class ScreenCaptureService : Service() {
         else
             @Suppress("DEPRECATION") intent?.getParcelableExtra("data")
 
+        Log.d(TAG, "resultCode=$resultCode, data=${data != null}")
+
         if (resultCode == -1 || data == null) {
+            Log.e(TAG, "Missing resultCode or data, stopping")
+            showToast("启动参数错误，停止采集")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -72,8 +81,11 @@ class ScreenCaptureService : Service() {
             val prefs = getSharedPreferences("kvm_prefs", MODE_PRIVATE)
             SERVER_IP = prefs.getString("server_ip", "") ?: ""
         }
+        Log.d(TAG, "SERVER_IP='$SERVER_IP'")
+
         if (SERVER_IP.isEmpty()) {
             updateNotification("未配置服务器地址")
+            showToast("未配置服务器地址")
             isRunning = false
             stopSelf()
             return
@@ -84,6 +96,10 @@ class ScreenCaptureService : Service() {
         else
             "ws://$SERVER_IP:8765/ws"
 
+        Log.d(TAG, "Connecting to: $url")
+        updateNotification("正在连接 $SERVER_IP ...")
+        showToast("正在连接 $url")
+
         val client = OkHttpClient.Builder()
             .pingInterval(10, TimeUnit.SECONDS)
             .connectTimeout(5, TimeUnit.SECONDS)
@@ -93,18 +109,23 @@ class ScreenCaptureService : Service() {
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
+                Log.d(TAG, "WebSocket connected!")
                 updateNotification("已连接 → $SERVER_IP")
+                showToast("已连接到 $SERVER_IP")
             }
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {}
 
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                Log.d(TAG, "WebSocket closing: $code $reason")
                 ws.close(1000, null)
                 stopCapture()
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                Log.e(TAG, "WebSocket failed: ${t.message}")
                 updateNotification("连接失败: ${t.message}")
+                showToast("连接失败: ${t.message}")
                 isRunning = false
                 stopCapture()
             }
@@ -112,8 +133,17 @@ class ScreenCaptureService : Service() {
     }
 
     private fun startCapture(resultCode: Int, data: Intent) {
+        Log.d(TAG, "startCapture")
         val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mgr.getMediaProjection(resultCode, data)
+
+        if (mediaProjection == null) {
+            Log.e(TAG, "MediaProjection is null")
+            showToast("屏幕采集权限获取失败")
+            isRunning = false
+            stopSelf()
+            return
+        }
 
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
@@ -171,7 +201,10 @@ class ScreenCaptureService : Service() {
         }.apply { start() }
 
         mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() { stopCapture() }
+            override fun onStop() {
+                Log.d(TAG, "MediaProjection stopped")
+                stopCapture()
+            }
         }, null)
     }
 
@@ -240,5 +273,9 @@ class ScreenCaptureService : Service() {
     private fun updateNotification(text: String) {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIFICATION_ID, buildNotification(text))
+    }
+
+    private fun showToast(msg: String) {
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     }
 }
