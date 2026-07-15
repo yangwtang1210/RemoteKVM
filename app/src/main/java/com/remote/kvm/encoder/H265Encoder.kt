@@ -4,7 +4,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.util.Log
-import java.io.ByteArrayOutputStream
+import android.view.Surface
 
 class H265Encoder(
     private val width: Int,
@@ -19,10 +19,7 @@ class H265Encoder(
     }
 
     private var codec: MediaCodec? = null
-    private val spsData = ByteArrayOutputStream()
-    private val ppsData = ByteArrayOutputStream()
-    private var spsReady = false
-    private var frameCount = 0
+    private var inputSurface: Surface? = null
 
     var onSpsAvailable: ((ByteArray) -> Unit)? = null
     var onPpsAvailable: ((ByteArray) -> Unit)? = null
@@ -30,7 +27,7 @@ class H265Encoder(
 
     fun prepare() {
         val format = MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
-            setInteger(MediaFormat.KEY_BITRATE, bitrate)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameInterval)
             setInteger(
@@ -39,17 +36,18 @@ class H265Encoder(
             )
         }
 
-        codec = MediaCodec.createEncoderByType(MIME_TYPE).also {
-            it.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        }
+        codec = MediaCodec.createEncoderByType(MIME_TYPE)
+        codec!!.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        inputSurface = codec!!.createInputSurface()
 
-        Log.i(TAG, "编码器已准备: ${width}x${height} @ ${bitrate / 1000000}Mbps")
+        Log.i(TAG, "编码器已准备: ${width}x${height}")
     }
+
+    fun getInputSurface(): Surface? = inputSurface
 
     fun start() {
         codec?.start()
 
-        // 单独线程读取编码输出
         Thread {
             val bufferInfo = MediaCodec.BufferInfo()
             while (codec != null) {
@@ -77,30 +75,29 @@ class H265Encoder(
 
     private fun processEncodedData(data: ByteArray, bufferInfo: MediaCodec.BufferInfo) {
         val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-        val presentationTimeUs = bufferInfo.presentationTimeUs
 
         if (isKeyFrame) {
-            // 关键帧包含 SPS/PPS，解析出来发给解码端
             parseKeyFrame(data)
         }
 
-        onFrameAvailable?.invoke(presentationTimeUs, data, isKeyFrame)
+        onFrameAvailable?.invoke(bufferInfo.presentationTimeUs, data, isKeyFrame)
     }
 
     private fun parseKeyFrame(data: ByteArray) {
-        // H265 NALU 解析：找 SPS (0x40) 和 PPS (0x42)
         var i = 0
         while (i < data.size - 4) {
-            // 查找起始码 00 00 00 01 或 00 00 01
             if (data[i] == 0.toByte() && data[i + 1] == 0.toByte()) {
                 val startCodeLen = if (data[i + 2] == 1.toByte()) 3 else 4
+                if (i + startCodeLen >= data.size) break
+
                 val nalHeader = data[i + startCodeLen].toInt() and 0x7E
                 val nalType = nalHeader shr 1
 
                 var nextNalu = data.size
                 for (j in i + startCodeLen + 1 until data.size - 3) {
                     if (data[j] == 0.toByte() && data[j + 1] == 0.toByte() &&
-                        (data[j + 2] == 1.toByte() || (j + 3 < data.size && data[j + 2] == 0.toByte() && data[j + 3] == 1.toByte()))
+                        (data[j + 2] == 1.toByte() ||
+                         (j + 3 < data.size && data[j + 2] == 0.toByte() && data[j + 3] == 1.toByte()))
                     ) {
                         nextNalu = j
                         break
@@ -110,18 +107,13 @@ class H265Encoder(
                 val naluData = data.copyOfRange(i + startCodeLen, nextNalu)
 
                 when (nalType) {
-                    33 -> { // SPS
-                        spsData.reset()
-                        spsData.write(naluData)
-                        spsReady = true
+                    33 -> {
                         onSpsAvailable?.invoke(naluData)
-                        Log.i(TAG, "SPS 发送: ${naluData.size} bytes")
+                        Log.i(TAG, "SPS: ${naluData.size} bytes")
                     }
-                    34 -> { // PPS
-                        ppsData.reset()
-                        ppsData.write(naluData)
+                    34 -> {
                         onPpsAvailable?.invoke(naluData)
-                        Log.i(TAG, "PPS 发送: ${naluData.size} bytes")
+                        Log.i(TAG, "PPS: ${naluData.size} bytes")
                     }
                 }
 
@@ -137,11 +129,8 @@ class H265Encoder(
             codec?.stop()
             codec?.release()
         } catch (_: Exception) {}
+        try { inputSurface?.release() } catch (_: Exception) {}
         codec = null
-        Log.i(TAG, "编码器已停止")
-    }
-
-    fun getInputSurface(): android.view.Surface? {
-        return codec?.createInputSurface()
+        inputSurface = null
     }
 }
