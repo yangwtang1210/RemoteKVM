@@ -10,18 +10,11 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import com.remote.kvm.encoder.H265Encoder
 
-/**
- * ScreenCaptureService — 屏幕采集前台服务（静默版）
- *
- * 静默策略：
- * - 通知渠道 LOW 重要性 → 不响铃、不震动、不弹出
- * - 前台通知常驻但无感
- * - 开机自启后自动恢复采集
- */
 class ScreenCaptureService : Service() {
 
     companion object {
@@ -29,7 +22,6 @@ class ScreenCaptureService : Service() {
         const val CHANNEL_ID = "capture_channel"
         const val NOTIFICATION_ID = 1
 
-        // ===== 编码参数 =====
         const val ENCODE_WIDTH = 1920
         const val ENCODE_HEIGHT = 1080
         const val ENCODE_DPI = 320
@@ -51,16 +43,16 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 从 Intent 取出授权结果
-        @Suppress("DEPRECATION")
         val resultCode = intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED)
             ?: Activity.RESULT_CANCELED
-        @Suppress("DEPRECATION")
-        val data = intent?.getParcelableExtra<Intent>("data")
+        val data = if (Build.VERSION.SDK_INT >= 33) {
+            intent?.getParcelableExtra("data", Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra("data")
+        }
 
         if (resultCode != Activity.RESULT_OK || data == null) {
-            // 授权失败（常见于开机自启时 MediaProjection 未授权）
-            // 静默停止，不打扰用户
             Log.w(TAG, "无授权，静默停止")
             stopSelf()
             return START_NOT_STICKY
@@ -69,7 +61,7 @@ class ScreenCaptureService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification())
         startCapture(resultCode, data)
 
-        return START_STICKY  // 被系统杀掉后自动重启
+        return START_STICKY
     }
 
     private fun startCapture(resultCode: Int, data: Intent) {
@@ -85,11 +77,18 @@ class ScreenCaptureService : Service() {
                 it.start()
             }
 
+            val inputSurface = encoder!!.getInputSurface()
+            if (inputSurface == null) {
+                Log.e(TAG, "获取 InputSurface 失败")
+                stopSelf()
+                return
+            }
+
             virtualDisplay = projection?.createVirtualDisplay(
                 "RemoteKVM",
                 ENCODE_WIDTH, ENCODE_HEIGHT, ENCODE_DPI,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                encoder!!.inputSurface,
+                inputSurface,
                 null, null
             )
 
@@ -121,13 +120,11 @@ class ScreenCaptureService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    // ===== 静默通知 =====
-
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
             "后台服务",
-            NotificationManager.IMPORTANCE_MIN  // 最低重要性：不响铃、不震动、不在状态栏弹出
+            NotificationManager.IMPORTANCE_MIN
         ).apply {
             description = "静默运行"
             setShowBadge(false)
@@ -140,14 +137,19 @@ class ScreenCaptureService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("")
-            .setContentText("")
+        val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setSilent(true)        // 无声音
-            .setOngoing(true)       // 不可清除
-            .setPriority(Notification.PRIORITY_MIN)  // 最低优先级
+            .setOngoing(true)
+            .setPriority(Notification.PRIORITY_MIN)
             .setCategory(Notification.CATEGORY_SERVICE)
-            .build()
+
+        if (Build.VERSION.SDK_INT >= 26) {
+            // API 26+ 通知已经在 channel 层面设为 MIN，不需要额外 setSilent
+        } else {
+            @Suppress("DEPRECATION")
+            builder.setSound(null)
+        }
+
+        return builder.build()
     }
 }
