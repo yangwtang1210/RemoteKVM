@@ -86,7 +86,7 @@ class ScreenCaptureService : Service() {
 
         val client = OkHttpClient.Builder()
             .pingInterval(10, TimeUnit.SECONDS)
-            .connectTimeout(5,.SECONDS)
+            .connectTimeout(5, TimeUnit.SECONDS)
             .build()
 
         val request = Request.Builder().url(url).build()
