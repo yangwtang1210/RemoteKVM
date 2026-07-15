@@ -30,6 +30,11 @@ class ScreenCaptureService : Service() {
         var SERVER_IP: String = ""
         var isRunning = false
             private set
+
+        // 从 MainActivity 传递过来的参数（绕过 Android 12+ extras 丢失）
+        var pendingResultCode: Int = -1
+        var pendingData: Intent? = null
+
         private const val CHANNEL_ID = "kvm_channel"
         private const val NOTIFICATION_ID = 1
         private const val TAG = "RemoteKVM"
@@ -56,17 +61,20 @@ class ScreenCaptureService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification("正在初始化"))
         isRunning = true
 
-        val resultCode = intent?.getIntExtra("resultCode", -1) ?: -1
-        val data = if (Build.VERSION.SDK_INT >= 33)
-            intent?.getParcelableExtra("data", Intent::class.java)
-        else
-            @Suppress("DEPRECATION") intent?.getParcelableExtra("data")
+        // 从 companion object 读取参数（而非 intent extras）
+        val resultCode = pendingResultCode
+        val data = pendingData
+
+        // 用完即清
+        pendingResultCode = -1
+        pendingData = null
 
         Log.d(TAG, "resultCode=$resultCode, data=${data != null}")
 
         if (resultCode == -1 || data == null) {
             Log.e(TAG, "Missing resultCode or data, stopping")
             showToast("启动参数错误，停止采集")
+            isRunning = false
             stopSelf()
             return START_NOT_STICKY
         }
