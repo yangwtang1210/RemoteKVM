@@ -72,6 +72,18 @@
         android:textSize="18sp"
         android:layout_alignParentBottom="true"
         android:layout_centerHorizontal="true"
-        android:layout_marginBottom="48dp" />
+        android:layout_marginBottom="100dp" />
+
+    <!-- 隐藏图标按钮：配好 IP 开始采集后，点这个让桌面图标消失 -->
+    <Button
+        android:id="@+id/hideIconBtn"
+        android:layout_width="220dp"
+        android:layout_height="44dp"
+        android:text="隐藏桌面图标"
+        android:textSize="13sp"
+        android:backgroundTint="#FF555555"
+        android:layout_alignParentBottom="true"
+        android:layout_centerHorizontal="true"
+        android:layout_marginBottom="40dp" />
 
 </RelativeLayout>

@@ -1,6 +1,7 @@
 package com.remote.kvm
 
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -45,6 +46,7 @@ class MainActivity : AppCompatActivity() {
             if (isCapturing) stopCapture() else preCheck()
         }
 
+        // 保存 IP
         findViewById<Button>(R.id.saveIpButton).setOnClickListener {
             val ip = serverInput.text.toString().trim()
             if (ip.isEmpty()) {
@@ -53,6 +55,11 @@ class MainActivity : AppCompatActivity() {
             }
             prefs.edit().putString(KEY_SERVER_IP, ip).apply()
             Toast.makeText(this, "已保存: $ip", Toast.LENGTH_SHORT).show()
+        }
+
+        // 隐藏图标（配好 IP 后点这个）
+        findViewById<Button>(R.id.hideIconBtn).setOnClickListener {
+            hideLauncherIcon()
         }
 
         if (Build.VERSION.SDK_INT >= 33) {
@@ -89,7 +96,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // 保存 IP 并同步到 Service
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .edit().putString(KEY_SERVER_IP, ip).apply()
         ScreenCaptureService.SERVER_IP = ip
@@ -123,7 +129,6 @@ class MainActivity : AppCompatActivity() {
                     .getString(KEY_SERVER_IP, "未设置")
                 log("采集启动，目标: $server")
                 updateUI()
-                toggleButton.postDelayed({ finish() }, 3000)
             } else {
                 Toast.makeText(this, "未授权屏幕采集", Toast.LENGTH_SHORT).show()
             }
@@ -149,6 +154,25 @@ class MainActivity : AppCompatActivity() {
             statusText.setTextColor(0xFFFFFFFF.toInt())
             toggleButton.text = "开始采集"
         }
+    }
+
+    /**
+     * 隐藏桌面图标，但 App 仍在后台运行。
+     * 重新启用：
+     *   adb shell pm enable com.remote.kvm/com.remote.kvm.MainActivity
+     */
+    private fun hideLauncherIcon() {
+        val comp = ComponentName(this, MainActivity::class.java)
+        packageManager.setComponentEnabledSetting(
+            comp,
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.DONT_KILL_APP
+        )
+        Toast.makeText(
+            this,
+            "图标已隐藏\n需恢复时执行:\nadb shell pm enable com.remote.kvm/com.remote.kvm.MainActivity",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun log(msg: String) {
