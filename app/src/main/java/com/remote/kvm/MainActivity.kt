@@ -115,10 +115,12 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == REQUEST_MEDIA_PROJECTION) {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 val ip = serverInput.text.toString().trim()
-                val svcIntent = Intent(this, ScreenCaptureService::class.java).apply {
-                    putExtra("resultCode", resultCode)
-                    putExtra("data", data)
-                }
+
+                // 先保存到 companion object，再启动服务（绕过 Android 12+ extras 丢失问题）
+                ScreenCaptureService.pendingResultCode = resultCode
+                ScreenCaptureService.pendingData = data
+
+                val svcIntent = Intent(this, ScreenCaptureService::class.java)
                 startForegroundService(svcIntent)
                 isCapturing = true
 
